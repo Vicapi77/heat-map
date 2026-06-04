@@ -353,6 +353,46 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
   padding:80px 30px;gap:12px;text-align:center}
 
 
+/* STATUS FILTER */
+.status-chips{display:flex;gap:6px;flex-wrap:wrap;padding:2px 0}
+.schip{border-radius:20px;padding:5px 12px;cursor:pointer;font-size:12px;font-weight:600;
+  display:inline-flex;align-items:center;gap:6px;line-height:1;transition:.15s;
+  border:1px solid transparent;white-space:nowrap;font-family:var(--sans)}
+.schip:hover{filter:brightness(1.2)}
+.schip.on{box-shadow:0 0 0 2px rgba(255,255,255,.25)}
+.schip-ALL    {background:var(--bg2);border-color:var(--line2);color:var(--txt2)}
+.schip-ALL.on {background:var(--accent2);border-color:var(--accent);color:#fff}
+.schip-OPERANDO    {background:var(--gbg);border-color:var(--g);color:var(--gt)}
+.schip-OPERANDO.on {background:#2ea043;color:#fff}
+.schip-DESCANSO    {background:rgba(58,160,255,.1);border-color:var(--accent2);color:var(--accent)}
+.schip-DESCANSO.on {background:var(--accent2);color:#fff}
+.schip-AUSENTISMO    {background:var(--ybg);border-color:var(--y);color:var(--yt)}
+.schip-AUSENTISMO.on {background:#bb8009;color:#fff}
+.schip-VACACIONES    {background:rgba(0,200,180,.1);border-color:#00c8b4;color:#00c8b4}
+.schip-VACACIONES.on {background:#00a896;color:#fff}
+.schip-INCAPACIDAD    {background:var(--rbg);border-color:var(--r);color:var(--rt)}
+.schip-INCAPACIDAD.on {background:#cf3b30;color:#fff}
+.schip-PSG    {background:rgba(120,100,200,.1);border-color:#8878c8;color:#a89be8}
+.schip-PSG.on {background:#6655aa;color:#fff}
+/* Catch-all for unknown status */
+.schip-UNK    {background:var(--panel2);border-color:var(--line);color:var(--txt3)}
+.schip-UNK.on {background:var(--na);color:#fff}
+
+/* STATUS column in matrix */
+.c-status{position:sticky;left:360px;z-index:6;min-width:110px;width:110px;text-align:left}
+.matrix thead .c-status{z-index:8}
+.matrix tbody .c-status{background:var(--panel2);border-right:1px solid #131c2a;padding:0 9px}
+.matrix tbody tr:hover .c-status{background:#16202e}
+.status-pill{font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;
+  display:inline-block;letter-spacing:.3px;white-space:nowrap}
+.sp-OPERANDO   {background:var(--gbg);color:var(--gt);border:1px solid var(--g)}
+.sp-DESCANSO   {background:rgba(58,160,255,.1);color:var(--accent);border:1px solid var(--accent2)}
+.sp-AUSENTISMO {background:var(--ybg);color:var(--yt);border:1px solid var(--y)}
+.sp-VACACIONES {background:rgba(0,200,180,.1);color:#00c8b4;border:1px solid #00a896}
+.sp-INCAPACIDAD{background:var(--rbg);color:var(--rt);border:1px solid var(--r)}
+.sp-PSG        {background:rgba(120,100,200,.1);color:#a89be8;border:1px solid #8878c8}
+.sp-UNK        {background:var(--panel2);color:var(--txt3);border:1px solid var(--line)}
+
 </style>
 <body>
 <div class="wrap">
@@ -503,6 +543,14 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
           <div class="plant-panel hide" id="plant-panel">
             <div class="plant-chips-bar" id="plant-chips"></div>
           </div>
+        </div>
+      </div>
+    </div>
+    <div class="ctl-row" style="margin-bottom:13px">
+      <div class="field" style="width:100%">
+        <label>Status</label>
+        <div class="status-chips" id="status-chips">
+          <button class="schip schip-ALL on" data-st="ALL">Todos</button>
         </div>
       </div>
     </div>
@@ -782,7 +830,7 @@ let DATA      = null;
 let ND        = 0;
 
 const state = {
-  plant:'ALL', shift:'BOTH', from:0, to:0, thr:1,
+  plant:'ALL', shift:'BOTH', status:'ALL', from:0, to:0, thr:1,
   hideWeekends:false, naIdle:true, onlyIssues:false,
   search:'', tab:'operadores',
   sortKey:'plant', sortDir:1,
@@ -825,7 +873,7 @@ $('fi-xl').addEventListener('change', e => {
         const r=rows[i];
         const nom=normNom(r[0]);
         if(!nom)continue;
-        ops.push({worker_id:nom, nombre:String(r[1]||'').trim(), planta:String(r[2]||'').trim()});
+        ops.push({worker_id:nom, nombre:String(r[1]||'').trim(), planta:String(r[2]||'').trim(), status:String(r[3]||'').trim().toUpperCase()||'—'});
       }
       PLANTILLA = ops;
       $('xl-badge').className='badge green'; $('xl-badge').textContent=`✓ ${ops.length} operadores`;
@@ -982,7 +1030,7 @@ function generar_legacy_unused(){
     const wt = agg[op.worker_id]||{};
     const iArr = dates.map(d=>{const v=(wt[d]||{}).IN||0; totalIn+=v; return v;});
     const oArr = dates.map(d=>{const v=(wt[d]||{}).OUT||0; totalOut+=v; return v;});
-    return{n:op.worker_id,m:op.nombre,p:op.planta,i:iArr,o:oArr};
+    return{n:op.worker_id,m:op.nombre,p:op.planta,st:op.status||'—',i:iArr,o:oArr};
   });
 
   DATA = {
@@ -1063,7 +1111,8 @@ function visibleDays(){
 function scopeOps(){
   if(!DATA)return[];
   let ops=DATA.operators;
-  if(state.plant!=='ALL')ops=ops.filter(o=>o.p===state.plant);
+  if(state.plant!=='ALL') ops=ops.filter(o=>o.p===state.plant);
+  if(state.status!=='ALL') ops=ops.filter(o=>o.st===state.status);
   if(state.search.trim()){
     const q=state.search.toLowerCase();
     ops=ops.filter(o=>o.m.toLowerCase().includes(q)||o.n.includes(q));
@@ -1075,6 +1124,7 @@ function sortOps(ops){
     if(state.sortKey==='plant')return(a.p+a.m).localeCompare(b.p+b.m)*state.sortDir;
     if(state.sortKey==='name') return a.m.localeCompare(b.m)*state.sortDir;
     if(state.sortKey==='nom')  return a.n.localeCompare(b.n)*state.sortDir;
+    if(state.sortKey==='status') return (a.st||'').localeCompare(b.st||'')*state.sortDir;
     const sa=opStats(a),sb=opStats(b);
     if(state.sortKey==='total')return(sb.total-sa.total)*state.sortDir;
     if(state.sortKey==='red')  return(sb.red-sa.red)*state.sortDir;
@@ -1122,7 +1172,8 @@ function renderMatrixTab(){
   let head=`<thead><tr>
     <th class="c-nom sortable" data-sort="nom">NÓM${arr('nom')}</th>
     <th class="c-name sortable" data-sort="name">NOMBRE${arr('name')}</th>
-    <th class="c-plant sortable" data-sort="plant">PLANTA${arr('plant')}</th>`;
+    <th class="c-plant sortable" data-sort="plant">PLANTA${arr('plant')}</th>
+    <th class="c-status sortable" data-sort="status">STATUS${arr('status')}</th>`;
   for(const di of days){const we=DATA.dow[di]>=5;
     head+=`<th class="day-h${we?' we':''}"><div class="dn">${dnum(DATA.dates[di])}</div><div class="dw">${DOWL[DATA.dow[di]]}</div></th>`;}
   head+=`<th class="c-total sortable" data-sort="total">TOT${arr('total')}</th>
@@ -1133,7 +1184,8 @@ function renderMatrixTab(){
     const s=opStats(op);const pct=s.comp!=null?Math.round(s.comp*100):null;
     const col=pct==null?'var(--txt3)':pct>=90?'var(--gt)':pct>=70?'var(--yt)':'var(--rt)';
     body+=`<tr><td class="c-nom">${op.n}</td><td class="c-name" title="${op.m}">${op.m}</td>
-      <td class="c-plant"><span class="plant-chip">${op.p}</span></td>`;
+      <td class="c-plant"><span class="plant-chip">${op.p}</span></td>
+      <td class="c-status"><span class="status-pill sp-${['OPERANDO','DESCANSO','AUSENTISMO','VACACIONES','INCAPACIDAD','PSG'].includes(op.st)?op.st:'UNK'}">${op.st||'—'}</span></td>`;
     for(const di of days){const cl=classify(op,di);const we=DATA.dow[di]>=5;
       body+=`<td class="day-cell" data-op="${op.n}" data-di="${di}"><span class="cell ${cl.c}${we?' we':''}">${cl.v}</span></td>`;}
     body+=`<td class="c-total">${fmt(s.total)}</td>
@@ -1304,6 +1356,27 @@ function setPlantLabel(plant, total, count){
     plant === 'ALL' ? `Todas las plantas (${total})` : `${plant} (${count})`;
 }
 
+function buildStatusChips(operators){
+  const bar = document.getElementById('status-chips');
+  if(!bar) return;
+  const counts = {};
+  operators.forEach(o => counts[o.st||'—'] = (counts[o.st||'—']||0)+1);
+  const statuses = Object.keys(counts).sort();
+  const cls = st => `schip schip-${['OPERANDO','DESCANSO','AUSENTISMO','VACACIONES','INCAPACIDAD','PSG'].includes(st)?st:'UNK'}`;
+  let html = `<button class="${cls('ALL')} schip-ALL on" data-st="ALL">Todos (${operators.length})</button>`;
+  statuses.forEach(st => {
+    html += `<button class="${cls(st)}" data-st="${st}">${st} <span style="opacity:.7">(${counts[st]})</span></button>`;
+  });
+  bar.innerHTML = html;
+  bar.addEventListener('click', e => {
+    const b = e.target.closest('.schip'); if(!b) return;
+    [...bar.querySelectorAll('.schip')].forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    state.status = b.dataset.st;
+    recompute();
+  });
+}
+
 function buildPlantChips(plants, operators){
   const counts = {};
   operators.forEach(o => counts[o.p] = (counts[o.p]||0) + 1);
@@ -1317,6 +1390,7 @@ function buildPlantChips(plants, operators){
   const bar = $('plant-chips');
   bar.innerHTML = html;
   setPlantLabel('ALL', total, total);
+  buildStatusChips(operators);
   bar.addEventListener('click', e => {
     const b = e.target.closest('.pchip'); if(!b) return;
     [...bar.querySelectorAll('.pchip')].forEach(ch => ch.classList.remove('on'));
@@ -1493,7 +1567,7 @@ function buildAndRender(agg, dateFrom, dateTo, viajes_count, source){
     const wt=agg[op.worker_id]||{};
     const iArr=dates.map(dt=>{const v=(wt[dt]||{}).IN||0;totalIn+=v;return v;});
     const oArr=dates.map(dt=>{const v=(wt[dt]||{}).OUT||0;totalOut+=v;return v;});
-    return{n:op.worker_id,m:op.nombre,p:op.planta,i:iArr,o:oArr};
+    return{n:op.worker_id,m:op.nombre,p:op.planta,st:op.status||'—',i:iArr,o:oArr};
   });
   DATA={meta:{source_file:source,business_unit:'LIPU Saltillo',
     generated:new Date().toISOString().slice(0,16).replace('T',' '),
