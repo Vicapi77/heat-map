@@ -655,44 +655,103 @@ async function loadPlantillaFromFirebase(){
 async function saveViajesFirebase(rows, cols, filename, onProgress){
   if(!db) throw new Error('Firebase no inicializado');
   const {colId, colNom, colDate, colShift} = cols;
-  const BATCH_SIZE = 400;
-  const col = db.collection('viajes');
+  const col     = db.collection('viajes');
+  const metaRef = db.collection('meta').doc('uploads');
 
-  // ── Detectar duplicados: muestra de 10 IDs ─────────────
-  const sampleIds = rows.slice(0,10)
-    .map(r => String(r[colId]||'').trim()).filter(Boolean);
-  let existingInSample = 0;
-  if(sampleIds.length){
-    const sSnap = await db.collection('viajes')
-      .where(firebase.firestore.FieldPath.documentId(),'in',sampleIds).get();
-    existingInSample = sSnap.size;
+  // ── Firma del archivo ──────────────────────────────────
+  const firstId = String(rows[0]?.[colId]||'').trim();
+  const lastId  = String(rows[rows.length-1]?.[colId]||'').trim();
+  const sig     = `${filename}||${rows.length}||${firstId}||${lastId}`;
+
+  const metaSnap    = await metaRef.get();
+  const prevUploads = metaSnap.exists ? (metaSnap.data().archivos || []) : [];
+  const yaExiste    = prevUploads.find(u => u.sig === sig);
+
+  // Archivo 100% idéntico → saltar todo
+  if(yaExiste){
+    return { written:0, skipped:rows.length, newTrips:0,
+             duplicate:true, uploadedAt:yaExiste.fecha };
   }
-  const likelyDup = existingInSample === sampleIds.length && sampleIds.length > 0;
 
-  // ── Batch writes ───────────────────────────────────────
-  let written = 0, skipped = 0;
-  for(let i = 0; i < rows.length; i += BATCH_SIZE){
+  // ── Construir mapa de IDs válidos del CSV ──────────────
+  const candidatos = []; // [{id, wid, fecha, sh}]
+  let invalid = 0;
+  for(const row of rows){
+    const id    = String(row[colId]||'').trim();
+    const wid   = normNom(row[colNom]);
+    const fecha = parseDate(row[colDate]);
+    if(!id || !wid || !fecha){ invalid++; continue; }
+    const sh = colShift ? String(row[colShift]||'').toUpperCase() : 'IN';
+    candidatos.push({id, wid, fecha, sh});
+  }
+
+  // ── Detectar IDs ya existentes en Firebase ─────────────
+  // Se consultan en lotes de 30 (límite de Firestore `in`)
+  // Solo se escriben los que NO existen → cero escrituras innecesarias
+  const CHECK_SIZE  = 30;
+  const WRITE_SIZE  = 400;
+  const existingIds = new Set();
+  const totalCandidatos = candidatos.length;
+  const totalChunks     = Math.ceil(totalCandidatos / CHECK_SIZE);
+
+  onProgress(0, 0, 'Verificando registros existentes…');
+
+  for(let i = 0; i < totalCandidatos; i += CHECK_SIZE){
+    const chunk   = candidatos.slice(i, i + CHECK_SIZE);
+    const ids     = chunk.map(r => r.id);
+    const snap    = await col
+      .where(firebase.firestore.FieldPath.documentId(), 'in', ids)
+      .get();
+    snap.forEach(d => existingIds.add(d.id));
+    // Progreso: verificación = primer 50%
+    const pct = Math.round(((i + chunk.length) / totalCandidatos) * 50);
+    onProgress(pct, 0, `Verificando… ${i+chunk.length}/${totalCandidatos}`);
+  }
+
+  // Filtrar solo los nuevos
+  const nuevos = candidatos.filter(r => !existingIds.has(r.id));
+  const repetidos = candidatos.length - nuevos.length;
+
+  if(nuevos.length === 0){
+    // Todos ya existen → registrar firma igual para evitar re-chequeos futuros
+    await metaRef.set({
+      archivos: firebase.firestore.FieldValue.arrayUnion({
+        sig, filename, total:rows.length, written:0,
+        repetidos, fecha: new Date().toLocaleString('es-MX')
+      }),
+      ultimo:{ filename, written:0, fecha:firebase.firestore.FieldValue.serverTimestamp() }
+    },{ merge:true });
+    return { written:0, skipped:repetidos, newTrips:0,
+             duplicate:false, allExisting:true };
+  }
+
+  // ── Escribir solo los viajes nuevos ───────────────────
+  let written = 0;
+  for(let i = 0; i < nuevos.length; i += WRITE_SIZE){
     const batch = db.batch();
-    const chunk = rows.slice(i, i + BATCH_SIZE);
-    for(const row of chunk){
-      const id  = String(row[colId]||'').trim();
-      const wid = normNom(row[colNom]);
-      const fecha = parseDate(row[colDate]);
-      if(!id || !wid || !fecha){ skipped++; continue; }
-      const sh = colShift ? String(row[colShift]||'').toUpperCase() : 'IN';
-      batch.set(col.doc(id), { id, worker_id: wid, fecha, shift: sh });
+    const chunk = nuevos.slice(i, i + WRITE_SIZE);
+    for(const r of chunk){
+      batch.set(col.doc(r.id), { id:r.id, worker_id:r.wid, fecha:r.fecha, shift:r.sh });
       written++;
     }
     await batch.commit();
-    onProgress(Math.round((i + chunk.length) / rows.length * 100), written);
+    // Progreso: escritura = segundo 50%
+    const pct = 50 + Math.round(((i + chunk.length) / nuevos.length) * 50);
+    onProgress(pct, written, `Guardando nuevos… ${written}/${nuevos.length}`);
   }
 
-  // ── Registrar en meta/uploads ──────────────────────────
-  await db.collection('meta').doc('uploads').set({
-    last: { filename, written, uploaded_at: firebase.firestore.FieldValue.serverTimestamp() }
-  }, { merge: true });
+  // ── Guardar firma ──────────────────────────────────────
+  await metaRef.set({
+    archivos: firebase.firestore.FieldValue.arrayUnion({
+      sig, filename, total:rows.length,
+      written, repetidos, invalid,
+      fecha: new Date().toLocaleString('es-MX')
+    }),
+    ultimo:{ filename, written, fecha:firebase.firestore.FieldValue.serverTimestamp() }
+  },{ merge:true });
 
-  return { written, skipped, likelyDup, existingInSample, total: sampleIds.length };
+  return { written, skipped:repetidos, newTrips:written,
+           duplicate:false, invalid };
 }
 
 // ── Viajes: consultar histórico ────────────────────────────
@@ -781,7 +840,7 @@ $('fi-xl').addEventListener('change', e => {
             fbStatus('fb-plantilla-status','ok',
               `Plantilla guardada: ${ops.length} operadores · ${semana} · ${file.name}`);
             FB_READY = true;
-            $('btn-hist').disabled = false;
+            const rb=$('btn-reload');if(rb)rb.disabled=false;
           })
           .catch(e=>fbStatus('fb-plantilla-status','err','Error guardando plantilla: '+e.message));
       }
@@ -842,20 +901,27 @@ $('fi-csv').addEventListener('change', e => {
           `<span class="spinner"></span> Guardando ${fmt(rows.length)} viajes en Firebase (deduplicados por ID)…`);
         const colId2 = findCol('id','id_servicio','trip_id','ID');
         saveViajesFirebase(rows, {colId:colId2||colNom, colNom, colDate, colShift}, file.name,
-          (pct, written)=>{
+          (pct, written, msg)=>{
             $('csv-prog').classList.remove('hide');
             $('csv-prog-fill').style.width = pct + '%';
             fbStatus('fb-viajes-status','info',
-              `<span class="spinner"></span> Guardando… ${pct}% · ${fmt(written)} viajes`);
+              `<span class="spinner"></span> ${msg||('Procesando… '+pct+'%')} · ${fmt(written)} viajes`);
           }
         ).then(res=>{
           $('csv-prog').classList.add('hide');
-          const dupMsg = res.likelyDup
-            ? ` (⚠ muestra indica viajes ya existentes — el ID único evita duplicados)`
-            : ` · ${res.existingInSample} de muestra ya existían`;
-          fbStatus('fb-viajes-status','ok',
-            `✅ ${fmt(res.written)} viajes guardados en Firebase${dupMsg}`);
-          $('btn-hist').disabled = false;
+          if(res.duplicate){
+            fbStatus('fb-viajes-status','warn',
+              `⚠ Archivo idéntico ya cargado el ${res.uploadedAt}. Sin cambios en Firebase.`);
+          } else if(res.allExisting){
+            fbStatus('fb-viajes-status','warn',
+              `⚠ ${fmt(res.skipped)} viajes ya existían en Firebase — ninguno era nuevo. Sin escrituras.`);
+          } else {
+            const partes = [`✅ ${fmt(res.written)} viajes NUEVOS guardados`];
+            if(res.skipped)  partes.push(`${fmt(res.skipped)} repetidos omitidos`);
+            if(res.invalid)  partes.push(`${res.invalid} filas inválidas`);
+            fbStatus('fb-viajes-status','ok', partes.join(' · '));
+            const rb=$('btn-reload');if(rb)rb.disabled=false;
+          }
         }).catch(e=>{
           $('csv-prog').classList.add('hide');
           fbStatus('fb-viajes-status','err','Error guardando viajes: '+e.message+
@@ -1545,7 +1611,7 @@ window.generarDesdeCSV = function(){
     document.getElementById('semana-input').value=meta.semana||'';
     fbStatus('fb-plantilla-status','ok',
       `${PLANTILLA.length} operadores · ${meta.semana||'—'} · ${meta.source_file||''}`);
-    document.getElementById('btn-hist') && (document.getElementById('btn-hist').disabled=false);
+    // btn-hist removed — btn-reload handles this
     document.getElementById('btn-reload').disabled=false;
   }catch(e){
     showError('Error cargando plantilla', e.message);
