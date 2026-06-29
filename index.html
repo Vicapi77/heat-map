@@ -462,6 +462,24 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
 .ai-send:hover{background:#6f4fe0}
 .ai-send:disabled{opacity:.4;cursor:not-allowed}
 
+/* MODE SWITCH */
+.mode-switch{display:flex;background:var(--panel2);border:1px solid var(--line2);
+  border-radius:var(--radius);padding:4px;gap:4px;width:fit-content}
+.mode-btn{background:transparent;border:none;color:var(--txt3);font-family:var(--sans);
+  font-weight:700;font-size:13px;padding:9px 22px;border-radius:10px;cursor:pointer;
+  display:flex;align-items:center;gap:8px;transition:.18s;white-space:nowrap}
+.mode-btn:hover{color:var(--txt);background:var(--bg2)}
+.mode-btn.on{background:var(--accent2);color:#fff;box-shadow:0 3px 12px rgba(31,111,235,.4)}
+.mode-bar{display:flex;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;gap:14px;margin-bottom:14px}
+.mode-bar-info{font-size:12px;color:var(--txt3);font-family:var(--mono)}
+.mode-bar-info b{color:var(--txt2)}
+
+/* Units mode — collapse the hidden nombre column gap */
+body.mode-units .c-name   { display:none !important; }
+body.mode-units .c-plant  { left:74px !important; }
+body.mode-units .c-status { left:182px !important; }
+
 </style>
 <body>
 <div class="wrap">
@@ -537,6 +555,24 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
         <div class="fb-status hide" id="fb-viajes-status"></div>
       </div>
 
+      <!-- Flotilla de Unidades -->
+      <div class="upload-col">
+        <div class="uz-label-top">Flotilla de Unidades (.xlsx)</div>
+        <div class="uz" id="uz-flota">
+          <input type="file" id="fi-flota" accept=".xlsx,.xls">
+          <div class="uz-icon">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><rect x="1" y="3" width="15" height="13" rx="2" stroke="#9fb0c4" stroke-width="1.6"/><path d="M16 8l5 3-5 3V8z" stroke="#3aa0ff" stroke-width="1.6"/></svg>
+          </div>
+          <div class="uz-hint">ID Unidad · Asignación · Status</div>
+          <div class="uz-name" id="flota-name">Sin archivo</div>
+        </div>
+        <div class="status-row">
+          <span class="badge gray" id="flota-badge">⬜ Pendiente</span>
+          <span id="flota-info" style="font-size:11px;color:var(--txt3)"></span>
+        </div>
+        <div class="fb-status hide" id="fb-flota-status"></div>
+      </div>
+
       <!-- Acciones + Estado Firebase -->
       <div class="upload-col" style="flex:0;min-width:220px;gap:12px">
         <div class="uz-label-top">Estado Firebase</div>
@@ -576,6 +612,21 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
 <!-- SEMAPHORE ─────────────────────────────────────────────── -->
 <div id="sema" class="hide">
 
+  <!-- MODE SWITCH -->
+  <div class="mode-bar" id="mode-bar">
+    <div class="mode-switch">
+      <button class="mode-btn on" data-mode="ops" onclick="switchMode('ops')">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        Operadores
+      </button>
+      <button class="mode-btn" data-mode="units" onclick="switchMode('units')">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="1" y="3" width="15" height="13" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 8l5 3-5 3V8z" fill="currentColor"/></svg>
+        Unidades
+      </button>
+    </div>
+    <div class="mode-bar-info" id="mode-info">Cargando…</div>
+  </div>
+
   <!-- BARRA DE FECHA / RECARGA -->
   <div class="date-bar">
     <div class="date-bar-left">
@@ -601,7 +652,7 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
     <!-- PLANT CHIPS -->
     <div class="ctl-row" style="margin-bottom:13px">
       <div class="field" style="width:100%">
-        <label>Planta</label>
+        <label id="plant-label">Planta / Asignación</label>
         <div class="plant-dropdown" id="plant-dropdown">
           <button class="plant-toggle" id="plant-toggle" onclick="togglePlantFilter()">
             <span id="plant-toggle-label">Todas las plantas</span>
@@ -832,6 +883,19 @@ async function loadPlantillaFromFirebase(){
   const snap = await db.collection('plantilla_semana').doc('current').get();
   return snap.exists ? snap.data() : null;
 }
+async function saveFlotaToFirebase(units, filename){
+  if(!db) throw new Error('Firebase no inicializado');
+  await db.collection('flota').doc('current').set({
+    source_file: filename,
+    uploaded_at: firebase.firestore.FieldValue.serverTimestamp(),
+    units
+  });
+}
+async function loadFlotaFromFirebase(){
+  if(!db) return null;
+  const snap = await db.collection('flota').doc('current').get();
+  return snap.exists ? snap.data() : null;
+}
 
 // ── Viajes: guardar con deduplicación por ID ───────────────
 // Cada documento Firestore usa el trip `id` como doc-ID → garantiza sin duplicados
@@ -844,7 +908,7 @@ async function saveViajesFirebase(rows, cols, filename, onProgress){
   // ── Firma del archivo ──────────────────────────────────
   const firstId = String(rows[0]?.[colId]||'').trim();
   const lastId  = String(rows[rows.length-1]?.[colId]||'').trim();
-  const sig     = `${filename}||${rows.length}||${firstId}||${lastId}`;
+  const sig     = `v2||${filename}||${rows.length}||${firstId}||${lastId}`; // v2 adds car field
 
   const metaSnap    = await metaRef.get();
   const prevUploads = metaSnap.exists ? (metaSnap.data().archivos || []) : [];
@@ -864,8 +928,9 @@ async function saveViajesFirebase(rows, cols, filename, onProgress){
     const wid   = normNom(row[colNom]);
     const fecha = parseDate(row[colDate]);
     if(!id || !wid || !fecha){ invalid++; continue; }
-    const sh = colShift ? String(row[colShift]||'').toUpperCase() : 'IN';
-    candidatos.push({id, wid, fecha, sh});
+    const sh  = colShift ? String(row[colShift]||'').toUpperCase() : 'IN';
+    const car = cols.colCar ? String(row[cols.colCar]||'').trim() : '';
+    candidatos.push({id, wid, fecha, sh, car});
   }
 
   // ── Detectar IDs ya existentes en Firebase ─────────────
@@ -891,12 +956,32 @@ async function saveViajesFirebase(rows, cols, filename, onProgress){
     onProgress(pct, 0, `Verificando… ${i+chunk.length}/${totalCandidatos}`);
   }
 
-  // Filtrar solo los nuevos
-  const nuevos = candidatos.filter(r => !existingIds.has(r.id));
-  const repetidos = candidatos.length - nuevos.length;
+  // Separar nuevos vs existentes
+  const nuevos     = candidatos.filter(r => !existingIds.has(r.id));
+  const existentes = candidatos.filter(r =>  existingIds.has(r.id));
+  const repetidos  = existentes.length;
 
-  if(nuevos.length === 0){
-    // Todos ya existen → registrar firma igual para evitar re-chequeos futuros
+  // ── Actualizar registros existentes con campo car (merge) ──
+  // Solo escribe el campo car; no toca worker_id, fecha, shift ni nada más
+  let updated = 0;
+  const conCar = existentes.filter(r => r.car);
+  if(conCar.length > 0){
+    onProgress(50, 0, `Actualizando campo car en ${conCar.length} registros…`);
+    for(let i = 0; i < conCar.length; i += WRITE_SIZE){
+      const batch = db.batch();
+      const chunk = conCar.slice(i, i + WRITE_SIZE);
+      for(const r of chunk){
+        // merge:true → solo añade/actualiza el campo car, no borra los demás
+        batch.set(col.doc(r.id), { car: r.car }, { merge: true });
+        updated++;
+      }
+      await batch.commit();
+      const pct = 50 + Math.round(((i + chunk.length) / conCar.length) * 25);
+      onProgress(pct, updated, `Actualizando car… ${updated}/${conCar.length}`);
+    }
+  }
+
+  if(nuevos.length === 0 && updated === 0){
     await metaRef.set({
       archivos: firebase.firestore.FieldValue.arrayUnion({
         sig, filename, total:rows.length, written:0,
@@ -904,22 +989,21 @@ async function saveViajesFirebase(rows, cols, filename, onProgress){
       }),
       ultimo:{ filename, written:0, fecha:firebase.firestore.FieldValue.serverTimestamp() }
     },{ merge:true });
-    return { written:0, skipped:repetidos, newTrips:0,
+    return { written:0, updated:0, skipped:repetidos,
              duplicate:false, allExisting:true };
   }
 
-  // ── Escribir solo los viajes nuevos ───────────────────
+  // ── Escribir viajes nuevos (full write) ───────────────
   let written = 0;
   for(let i = 0; i < nuevos.length; i += WRITE_SIZE){
     const batch = db.batch();
     const chunk = nuevos.slice(i, i + WRITE_SIZE);
     for(const r of chunk){
-      batch.set(col.doc(r.id), { id:r.id, worker_id:r.wid, fecha:r.fecha, shift:r.sh });
+      batch.set(col.doc(r.id), { id:r.id, worker_id:r.wid, fecha:r.fecha, shift:r.sh, ...(r.car ? {car:r.car} : {}) });
       written++;
     }
     await batch.commit();
-    // Progreso: escritura = segundo 50%
-    const pct = 50 + Math.round(((i + chunk.length) / nuevos.length) * 50);
+    const pct = 75 + Math.round(((i + chunk.length) / Math.max(nuevos.length,1)) * 25);
     onProgress(pct, written, `Guardando nuevos… ${written}/${nuevos.length}`);
   }
 
@@ -933,8 +1017,8 @@ async function saveViajesFirebase(rows, cols, filename, onProgress){
     ultimo:{ filename, written, fecha:firebase.firestore.FieldValue.serverTimestamp() }
   },{ merge:true });
 
-  return { written, skipped:repetidos, newTrips:written,
-           duplicate:false, invalid };
+  return { written, updated, skipped:repetidos,
+           newTrips:written, duplicate:false, invalid };
 }
 
 // ── Viajes: consultar histórico ────────────────────────────
@@ -959,13 +1043,14 @@ function fdate(s){if(!s)return'—';const[y,m,d]=s.split('-');return`${+d} ${MES
 function dnum(s){return s?+s.split('-')[2]:''}
 function isoWeek(d){const j=new Date(d.getFullYear(),0,1);return Math.ceil((((d-j)/86400000)+j.getDay()+1)/7)}
 
-let PLANTILLA = null; // [{worker_id,nombre,planta}]
+let PLANTILLA = null; // [{worker_id,nombre,planta,status}]
+let FLOTA     = null; // [{unit_id,asignacion,status}]
 let CSV_DATA  = null; // parsed trips
 let DATA      = null;
 let ND        = 0;
 
 const state = {
-  plant:'ALL', shift:'BOTH', status:'ALL', from:0, to:0, thr:1,
+  plant:'ALL', shift:'BOTH', status:'ALL', viewMode:'ops', from:0, to:0, thr:1,
   hideWeekends:false, naIdle:true, onlyIssues:false,
   search:'', tab:'operadores',
   sortKey:'plant', sortDir:1,
@@ -1061,6 +1146,7 @@ $('fi-csv').addEventListener('change', e => {
       const colNom   = findCol('no. de nomina','worker_id','nomina','nómina','NOMINA');
       const colDate  = findCol('start_date','fecha','date','Fecha');
       const colShift = findCol('shift','turno','Turno','Shift');
+      const colCar   = findCol('car','Car','CAR','unidad','unit','vehiculo');
 
       if(!colNom||!colDate){
         $('csv-badge').className='badge';$('csv-badge').style.background='var(--rbg)';
@@ -1083,7 +1169,7 @@ $('fi-csv').addEventListener('change', e => {
         fbStatus('fb-viajes-status','loading',
           `<span class="spinner"></span> Guardando ${fmt(rows.length)} viajes en Firebase (deduplicados por ID)…`);
         const colId2 = findCol('id','id_servicio','trip_id','ID');
-        saveViajesFirebase(rows, {colId:colId2||colNom, colNom, colDate, colShift}, file.name,
+        saveViajesFirebase(rows, {colId:colId2||colNom, colNom, colDate, colShift, colCar}, file.name,
           (pct, written, msg)=>{
             $('csv-prog').classList.remove('hide');
             $('csv-prog-fill').style.width = pct + '%';
@@ -1094,13 +1180,15 @@ $('fi-csv').addEventListener('change', e => {
           $('csv-prog').classList.add('hide');
           if(res.duplicate){
             fbStatus('fb-viajes-status','warn',
-              `⚠ Archivo idéntico ya cargado el ${res.uploadedAt}. Sin cambios en Firebase.`);
-          } else if(res.allExisting){
+              `⚠ Archivo idéntico ya cargado el ${res.uploadedAt}. Sin cambios.`);
+          } else if(res.allExisting && !res.updated){
             fbStatus('fb-viajes-status','warn',
-              `⚠ ${fmt(res.skipped)} viajes ya existían en Firebase — ninguno era nuevo. Sin escrituras.`);
+              `⚠ ${fmt(res.skipped)} viajes ya existían y no tienen campo car. Sin cambios.`);
           } else {
-            const partes = [`✅ ${fmt(res.written)} viajes NUEVOS guardados`];
-            if(res.skipped)  partes.push(`${fmt(res.skipped)} repetidos omitidos`);
+            const partes = [];
+            if(res.written)  partes.push(`✅ ${fmt(res.written)} viajes nuevos`);
+            if(res.updated)  partes.push(`🔄 ${fmt(res.updated)} actualizados con campo car`);
+            if(res.skipped && !res.updated) partes.push(`${fmt(res.skipped)} ya existían`);
             if(res.invalid)  partes.push(`${res.invalid} filas inválidas`);
             fbStatus('fb-viajes-status','ok', partes.join(' · '));
             const rb=$('btn-reload');if(rb)rb.disabled=false;
@@ -1285,9 +1373,9 @@ function renderKPIs(){
       <div class="note">${fmt(green)} días OK de ${fmt(possible)}</div></div>
     <div class="kpi k-r"><div class="lbl">Días sin viaje</div><div class="val">${fmt(red)}</div>
       <div class="note">${abs!=null?Math.round(abs*100)+'% de ausencia':''}</div></div>
-    <div class="kpi"><div class="lbl">Operadores</div><div class="val">${fmt(scope.length)}</div>
+    <div class="kpi"><div class="lbl">${state.viewMode==='units'?'Unidades':'Operadores'}</div><div class="val">${fmt(scope.length)}</div>
       <div class="note">${DATA.plants.length} plantas · ${days.length} días</div></div>
-    <div class="kpi k-y"><div class="lbl">Con ausencias</div><div class="val">${fmt(scope.filter(o=>opStats(o).red>0).length)}</div>
+    <div class="kpi k-y"><div class="lbl">${state.viewMode==='units'?'Sin viajes':'Con ausencias'}</div><div class="val">${fmt(scope.filter(o=>opStats(o).red>0).length)}</div>
       <div class="note">con ≥1 día sin viajes</div></div>
     <div class="kpi"><div class="lbl">Sin coincidencia</div><div class="val" style="font-size:18px">${fmt(DATA.meta.unattributed_trips)}</div>
       <div class="note">registros fuera de plantilla</div></div>`;
@@ -1299,15 +1387,15 @@ function renderMatrixTab(){
   let scope=scopeOps();
   if(state.onlyIssues)scope=scope.filter(o=>opStats(o).red>0);
   scope=sortOps(scope);
-  $('op-title').textContent='Matriz operador × día';
-  $('op-note').textContent=`${scope.length} operadores · ${days.length} días · ${state.plant==='ALL'?'todas las plantas':state.plant}`;
+  $('op-title').textContent=(state.viewMode==='units')?'Matriz unidad × día':'Matriz operador × día';
+  $('op-note').textContent=`${scope.length} ${(state.viewMode==='units')?'unidades':'operadores'} · ${days.length} días · ${state.plant==='ALL'?'todas las plantas':state.plant}`;
   $('cnt-ops').textContent=scope.length;
   const arr=k=>`<span class="arr">${state.sortKey===k?(state.sortDir===1?'↑':'↓'):'↕'}</span>`;
-  if(!scope.length){$('matrix-scroll').innerHTML='<div class="empty">Sin operadores para mostrar</div>';return;}
+  if(!scope.length){$('matrix-scroll').innerHTML=`<div class="empty">Sin ${(state.viewMode==='units')?'unidades':'operadores'} para mostrar</div>`;return;}
   let head=`<thead><tr>
-    <th class="c-nom sortable" data-sort="nom">NÓM${arr('nom')}</th>
-    <th class="c-name sortable" data-sort="name">NOMBRE${arr('name')}</th>
-    <th class="c-plant sortable" data-sort="plant">PLANTA${arr('plant')}</th>
+    <th class="c-nom sortable" data-sort="nom">${(state.viewMode==='units')?'UNIDAD':('NÓM'+arr('nom'))}</th>
+    <th class="c-name sortable" data-sort="name">${(state.viewMode==='units')?'':('NOMBRE'+arr('name'))}</th>
+    <th class="c-plant sortable" data-sort="plant">${(state.viewMode==='units')?'ASIGNACIÓN':('PLANTA'+arr('plant'))}</th>
     <th class="c-status sortable" data-sort="status">STATUS${arr('status')}</th>`;
   for(const di of days){const we=DATA.dow[di]>=5;
     head+=`<th class="day-h${we?' we':''}"><div class="dn">${dnum(DATA.dates[di])}</div><div class="dw">${DOWL[DATA.dow[di]]}</div></th>`;}
@@ -1318,9 +1406,12 @@ function renderMatrixTab(){
   for(const op of scope){
     const s=opStats(op);const pct=s.comp!=null?Math.round(s.comp*100):null;
     const col=pct==null?'var(--txt3)':pct>=90?'var(--gt)':pct>=70?'var(--yt)':'var(--rt)';
-    body+=`<tr><td class="c-nom">${op.n}</td><td class="c-name" title="${op.m}">${op.m}</td>
+    const spClass = ['OPERANDO','DESCANSO','AUSENTISMO','VACACIONES','INCAPACIDAD','PSG'].includes(op.st)?op.st:'UNK';
+    body+=`<tr>
+      <td class="c-nom">${op.n}</td>
+      <td class="c-name" title="${op.m}">${(state.viewMode==='units')?'':op.m}</td>
       <td class="c-plant"><span class="plant-chip">${op.p}</span></td>
-      <td class="c-status"><span class="status-pill sp-${['OPERANDO','DESCANSO','AUSENTISMO','VACACIONES','INCAPACIDAD','PSG'].includes(op.st)?op.st:'UNK'}">${op.st||'—'}</span></td>`;
+      <td class="c-status"><span class="status-pill sp-${spClass}">${op.st||'—'}</span></td>`;
     for(const di of days){const cl=classify(op,di);const we=DATA.dow[di]>=5;
       body+=`<td class="day-cell" data-op="${op.n}" data-di="${di}"><span class="cell ${cl.c}${we?' we':''}">${cl.v}</span></td>`;}
     body+=`<td class="c-total">${fmt(s.total)}</td>
@@ -1491,6 +1582,12 @@ function setPlantLabel(plant, total, count){
     plant === 'ALL' ? `Todas las plantas (${total})` : `${plant} (${count})`;
 }
 
+function updateModeLabels(){
+  const isU = state.viewMode==='units';
+  const lbl = document.getElementById('plant-label');
+  if(lbl) lbl.textContent = isU ? 'Asignación' : 'Planta';
+}
+
 function buildStatusChips(operators){
   const bar = document.getElementById('status-chips');
   if(!bar) return;
@@ -1526,6 +1623,7 @@ function buildPlantChips(plants, operators){
   bar.innerHTML = html;
   setPlantLabel('ALL', total, total);
   buildStatusChips(operators);
+  updateModeLabels();
   bar.addEventListener('click', e => {
     const b = e.target.closest('.pchip'); if(!b) return;
     [...bar.querySelectorAll('.pchip')].forEach(ch => ch.classList.remove('on'));
@@ -1649,6 +1747,58 @@ document.addEventListener('mousemove',e=>{
 });
 
 
+// ── Flotilla upload handler ────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  const fiFlota = document.getElementById('fi-flota');
+  if(fiFlota) fiFlota.addEventListener('change', e => {
+    const file = e.target.files[0]; if(!file) return;
+    document.getElementById('flota-name').textContent = file.name;
+    document.getElementById('flota-badge').className = 'badge yellow';
+    document.getElementById('flota-badge').textContent = '⏳ Leyendo…';
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try{
+        const wb   = XLSX.read(ev.target.result, {type:'array'});
+        const wsN  = wb.SheetNames[0];
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wsN], {header:1});
+        // Detect columns (ID Unidad, Asignación, Status)
+        const hdr = (rows[0]||[]).map(h=>String(h||'').trim().toUpperCase());
+        const idxId  = hdr.findIndex(h=>h.includes('ID') || h.includes('UNIDAD') || h.includes('ECONOMICO'));
+        const idxAs  = hdr.findIndex(h=>h.includes('ASIGN') || h.includes('RUTA') || h.includes('PLANTA'));
+        const idxSt  = hdr.findIndex(h=>h.includes('STATUS') || h.includes('ESTADO') || h.includes('ESTATUS'));
+        const units = [];
+        for(let i=1;i<rows.length;i++){
+          const r = rows[i];
+          const uid = String(r[idxId>=0?idxId:0]||'').trim();
+          if(!uid) continue;
+          units.push({
+            unit_id:    uid,
+            asignacion: String(r[idxAs>=0?idxAs:1]||'').trim().toUpperCase(),
+            status:     String(r[idxSt>=0?idxSt:2]||'').trim().toUpperCase() || 'ACTIVA'
+          });
+        }
+        if(!units.length) throw new Error('No se encontraron unidades');
+        FLOTA = units;
+        document.getElementById('flota-badge').className = 'badge green';
+        document.getElementById('flota-badge').textContent = `✓ ${units.length} unidades`;
+        document.getElementById('flota-info').textContent = file.name;
+        document.getElementById('uz-flota').classList.add('done');
+        if(db){
+          fbStatus('fb-flota-status','loading','<span class="spinner"></span> Guardando flotilla en Firebase…');
+          saveFlotaToFirebase(units, file.name)
+            .then(()=>fbStatus('fb-flota-status','ok',`✅ ${units.length} unidades guardadas`))
+            .catch(e=>fbStatus('fb-flota-status','err','Error: '+e.message));
+        }
+      }catch(er){
+        document.getElementById('flota-badge').className = 'badge';
+        document.getElementById('flota-badge').style.cssText = 'background:var(--rbg);border-color:var(--r);color:var(--rt)';
+        document.getElementById('flota-badge').textContent = '✗ ' + er.message;
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  });
+});
+
 // ── UI state helpers ──────────────────────────────────────
 function showState(s){
   ['state-loading','state-error','sema'].forEach(id=>{
@@ -1691,18 +1841,64 @@ window.setQuick = function(mode){
   document.getElementById('h-to').value=to.toISOString().slice(0,10);
 };
 
+// ── Mode switch ───────────────────────────────────────
+window.switchMode = async function(mode){
+  if(state.viewMode === mode) return;
+  [...document.querySelectorAll('.mode-btn')].forEach(b=>b.classList.toggle('on', b.dataset.mode===mode));
+
+  // Load flota if switching to units and not yet loaded
+  if(mode === 'units' && (!FLOTA || !FLOTA.length)){
+    if(db){
+      fbStatus('fb-flota-status','loading','<span class="spinner"></span> Cargando flotilla de Firebase…');
+      const meta = await loadFlotaFromFirebase().catch(()=>null);
+      if(meta && meta.units && meta.units.length){
+        FLOTA = meta.units;
+        document.getElementById('flota-badge').className='badge green';
+        document.getElementById('flota-badge').textContent=`✓ ${FLOTA.length} unidades`;
+        document.getElementById('flota-name').textContent=meta.source_file||'Firebase';
+        fbStatus('fb-flota-status','ok',`${FLOTA.length} unidades cargadas de Firebase`);
+      } else {
+        document.getElementById('mode-info').textContent='⚠ Sube la flotilla de unidades en "Carga de datos"';
+        fbStatus('fb-flota-status','warn','Sin flotilla en Firebase. Súbela en el panel de Carga de datos.');
+        // Revert button state
+        [...document.querySelectorAll('.mode-btn')].forEach(b=>b.classList.toggle('on', b.dataset.mode==='ops'));
+        return;
+      }
+    } else {
+      document.getElementById('mode-info').textContent='⚠ Sube la flotilla de unidades';
+      [...document.querySelectorAll('.mode-btn')].forEach(b=>b.classList.toggle('on', b.dataset.mode==='ops'));
+      return;
+    }
+  }
+
+  // Set mode AFTER successful validation
+  state.viewMode = mode;
+  state.plant = 'ALL';
+  state.status = 'ALL';
+
+  if(DATA) await recargarFirebase();
+};
+
 // ── Build semaphore from aggregated data ──────────────────
 function buildAndRender(agg, dateFrom, dateTo, viajes_count, source){
   const dates=[], dow=[];
-  const d=new Date(dateFrom+'T00:00:00'), end=new Date(dateTo+'T00:00:00');
-  while(d<=end){dates.push(d.toISOString().slice(0,10));dow.push((d.getDay()+6)%7);d.setDate(d.getDate()+1);}
-  const plants=[...new Set(PLANTILLA.map(o=>o.planta))].sort();
+  const d2=new Date(dateFrom+'T00:00:00'), end2=new Date(dateTo+'T00:00:00');
+  while(d2<=end2){dates.push(d2.toISOString().slice(0,10));dow.push((d2.getDay()+6)%7);d2.setDate(d2.getDate()+1);}
+
+  const isUnits  = state.viewMode === 'units';
+  document.body.classList.toggle('mode-units', isUnits);
+  const baseList = isUnits ? (FLOTA||[]) : (PLANTILLA||[]);
+  const groupKey = isUnits ? 'asignacion' : 'planta';
+  const plants   = [...new Set(baseList.map(o=>o[groupKey]))].sort();
   let totalIn=0,totalOut=0;
-  const operators=PLANTILLA.map(op=>{
-    const wt=agg[op.worker_id]||{};
-    const iArr=dates.map(dt=>{const v=(wt[dt]||{}).IN||0;totalIn+=v;return v;});
-    const oArr=dates.map(dt=>{const v=(wt[dt]||{}).OUT||0;totalOut+=v;return v;});
-    return{n:op.worker_id,m:op.nombre,p:op.planta,st:op.status||'—',i:iArr,o:oArr};
+
+  const operators = baseList.map(entity => {
+    const key = isUnits ? entity.unit_id : entity.worker_id;
+    const wt  = agg[key]||{};
+    const iArr=dates.map(dt=>{const v=(wt[dt]||{}).IN||0; totalIn+=v; return v;});
+    const oArr=dates.map(dt=>{const v=(wt[dt]||{}).OUT||0;totalOut+=v; return v;});
+    return{n:key, m:isUnits?'':(entity.nombre||''), p:entity[groupKey]||'—',
+           st:entity.status||'—', i:iArr, o:oArr};
   });
   DATA={meta:{source_file:source,business_unit:'LIPU Saltillo',
     generated:new Date().toISOString().slice(0,16).replace('T',' '),
@@ -1712,7 +1908,12 @@ function buildAndRender(agg, dateFrom, dateTo, viajes_count, source){
     in_total:totalIn,out_total:totalOut},
     dates,dow,plants,operators};
   ND=dates.length; state.from=0; state.to=ND-1;
-  document.getElementById('m-bu').textContent=`${PLANTILLA.length} operadores`;
+  const modeLabel = state.viewMode==='units'
+    ? `${(FLOTA||[]).length} unidades`
+    : `${(PLANTILLA||[]).length} operadores`;
+  document.getElementById('m-bu').textContent = modeLabel;
+  const mInfo = document.getElementById('mode-info');
+  if(mInfo) mInfo.innerHTML = `<b>${state.viewMode==='units'?'Unidades':'Operadores'}</b> · ${fmt(DATA.meta.total_trips_attributed)} viajes · ${fdate(DATA.meta.date_min)} – ${fdate(DATA.meta.date_max)}`;
   document.getElementById('m-period').textContent=fdate(dateFrom)+' – '+fdate(dateTo);
   document.getElementById('m-trips').textContent=fmt(totalIn+totalOut);
   document.getElementById('m-ops').textContent=fmt(PLANTILLA.length);
@@ -1739,15 +1940,17 @@ window.recargarFirebase = async function(){
         'Verifica que hayas subido el CSV con datos para esas fechas usando el panel de Carga de datos.');
       btn.disabled=false; return;
     }
+    const isUnits = state.viewMode === 'units';
     const agg={};
     for(const v of viajes){
-      if(!v.worker_id||!v.fecha)continue;
-      if(!agg[v.worker_id])agg[v.worker_id]={};
-      if(!agg[v.worker_id][v.fecha])agg[v.worker_id][v.fecha]={IN:0,OUT:0};
-      if(v.shift==='OUT')agg[v.worker_id][v.fecha].OUT++;
-      else agg[v.worker_id][v.fecha].IN++;
+      const key = isUnits ? v.car : v.worker_id;
+      if(!key||!v.fecha)continue;
+      if(!agg[key])agg[key]={};
+      if(!agg[key][v.fecha])agg[key][v.fecha]={IN:0,OUT:0};
+      if(v.shift==='OUT')agg[key][v.fecha].OUT++;
+      else agg[key][v.fecha].IN++;
     }
-    buildAndRender(agg, df, dt, viajes.length, 'Firebase · histórico');
+    buildAndRender(agg, df, dt, viajes.length, `Firebase · ${isUnits?'unidades':'operadores'}`);
   }catch(e){
     showError('Error consultando Firebase', e.message+
       (e.message.includes('index')?
@@ -1845,6 +2048,15 @@ window.generarDesdeCSV = function(){
       else agg[v.worker_id][v.fecha].IN++;
     }
     buildAndRender(agg, df, dt, viajes.length, 'Firebase · mes actual');
+    // Try loading flota silently for units mode availability
+    loadFlotaFromFirebase().then(meta=>{
+      if(meta&&meta.units){
+        FLOTA=meta.units;
+        document.getElementById('flota-badge').className='badge green';
+        document.getElementById('flota-badge').textContent=`✓ ${FLOTA.length} unidades`;
+        document.getElementById('flota-name').textContent=meta.source_file||'Firebase';
+      }
+    }).catch(()=>{});
     document.getElementById('btn-reload').disabled=false;
   }catch(e){
     const isIndex=e.message.includes('index')||e.message.includes('precondition');
