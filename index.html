@@ -167,7 +167,9 @@ input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(58,1
 .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:13px;margin-bottom:18px}
 .kpi{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);
   border-radius:var(--radius);padding:15px 16px;position:relative;overflow:hidden;
-  box-shadow:0 8px 24px rgba(0,0,0,.22)}
+  box-shadow:0 8px 24px rgba(0,0,0,.22);cursor:pointer;user-select:none;transition:.15s}
+.kpi:hover{border-color:var(--accent);transform:translateY(-1px);box-shadow:0 10px 28px rgba(0,0,0,.32)}
+.kpi.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(58,160,255,.4) inset,0 8px 24px rgba(0,0,0,.22)}
 .kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
 .kpi.k-g::before{background:var(--g)}.kpi.k-r::before{background:var(--r)}.kpi.k-y::before{background:var(--y)}
 .kpi .lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--txt3);font-weight:700;margin-bottom:7px}
@@ -1051,7 +1053,7 @@ let ND        = 0;
 
 const state = {
   plant:'ALL', shift:'BOTH', status:'ALL', viewMode:'ops', from:0, to:0, thr:1,
-  hideWeekends:false, naIdle:true, onlyIssues:false,
+  hideWeekends:false, naIdle:true, onlyIssues:false, kpiFilter:null,
   search:'', tab:'operadores',
   sortKey:'plant', sortDir:1,
   rankSort:'comp', rankDir:1
@@ -1357,28 +1359,46 @@ function sortOps(ops){
 }
 
 // KPIs
+function maxNoTripStreak(op,days){
+  const workDays=days.filter(di=>!isPlantIdle(op.p,di));
+  let max=0,cur=0;
+  for(const di of workDays){
+    if(tripVal(op,di)===0){cur++;if(cur>max)max=cur;}
+    else cur=0;
+  }
+  return max;
+}
+const KPI_LABELS={zero:'0 días con viajes',streak2:'2 días sin viaje seguidos',streak3:'3 días sin viaje seguidos',streak4:'4+ días sin viaje seguidos',ok:'cumpliendo'};
+function opBucket(op,days){
+  const workDays=days.filter(di=>!isPlantIdle(op.p,di));
+  const daysWithTrips=workDays.filter(di=>tripVal(op,di)>0).length;
+  if(daysWithTrips===0)return'zero';
+  const streak=maxNoTripStreak(op,days);
+  if(streak===2)return'streak2';
+  if(streak===3)return'streak3';
+  if(streak>=4)return'streak4';
+  return'ok';
+}
 function renderKPIs(){
   const scope=scopeOps(),days=visibleDays();
-  let trips=0,red=0,green=0;
-  for(const op of scope){const s=opStats(op);trips+=s.total;red+=s.red;green+=s.green;}
-  const possible=scope.reduce((a,op)=>{
-    const naC=visibleDays().filter(di=>classify(op,di).c==='na').length;
-    return a+(visibleDays().length-naC);},0);
-  const comp=possible>0?green/possible:null;
-  const abs=possible>0?red/possible:null;
+  const label=state.viewMode==='units'?'unidades':'operadores';
+  const counts={zero:0,streak2:0,streak3:0,streak4:0,ok:0};
+  for(const op of scope)counts[opBucket(op,days)]++;
+  const pct=n=>scope.length>0?Math.round(n/scope.length*100)+'%':'—';
+  const sel=k=>state.kpiFilter===k?' sel':'';
   $('kpis').innerHTML=`
-    <div class="kpi k-g"><div class="lbl">Total viajes</div><div class="val">${fmt(trips)}</div>
-      <div class="note">${fmt(DATA.meta.in_total)} IN · ${fmt(DATA.meta.out_total)} OUT</div></div>
-    <div class="kpi k-g"><div class="lbl">Cumplimiento</div><div class="val">${comp!=null?Math.round(comp*100)+'<small>%</small>':'—'}</div>
-      <div class="note">${fmt(green)} días OK de ${fmt(possible)}</div></div>
-    <div class="kpi k-r"><div class="lbl">Días sin viaje</div><div class="val">${fmt(red)}</div>
-      <div class="note">${abs!=null?Math.round(abs*100)+'% de ausencia':''}</div></div>
-    <div class="kpi"><div class="lbl">${state.viewMode==='units'?'Unidades':'Operadores'}</div><div class="val">${fmt(scope.length)}</div>
+    <div class="kpi${!state.kpiFilter?' sel':''}" data-kpi="all"><div class="lbl">Total ${label}</div><div class="val">${fmt(scope.length)}</div>
       <div class="note">${DATA.plants.length} plantas · ${days.length} días</div></div>
-    <div class="kpi k-y"><div class="lbl">${state.viewMode==='units'?'Sin viajes':'Con ausencias'}</div><div class="val">${fmt(scope.filter(o=>opStats(o).red>0).length)}</div>
-      <div class="note">con ≥1 día sin viajes</div></div>
-    <div class="kpi"><div class="lbl">Sin coincidencia</div><div class="val" style="font-size:18px">${fmt(DATA.meta.unattributed_trips)}</div>
-      <div class="note">registros fuera de plantilla</div></div>`;
+    <div class="kpi k-r${sel('zero')}" data-kpi="zero"><div class="lbl">0 días con viajes</div><div class="val">${fmt(counts.zero)}</div>
+      <div class="note">${pct(counts.zero)} del total</div></div>
+    <div class="kpi k-y${sel('streak2')}" data-kpi="streak2"><div class="lbl">2 días sin viaje seguidos</div><div class="val">${fmt(counts.streak2)}</div>
+      <div class="note">${pct(counts.streak2)} del total</div></div>
+    <div class="kpi k-y${sel('streak3')}" data-kpi="streak3"><div class="lbl">3 días sin viaje seguidos</div><div class="val">${fmt(counts.streak3)}</div>
+      <div class="note">${pct(counts.streak3)} del total</div></div>
+    <div class="kpi k-r${sel('streak4')}" data-kpi="streak4"><div class="lbl">4+ días sin viaje seguidos</div><div class="val">${fmt(counts.streak4)}</div>
+      <div class="note">${pct(counts.streak4)} del total</div></div>
+    <div class="kpi k-g${sel('ok')}" data-kpi="ok"><div class="lbl">Cumpliendo</div><div class="val">${fmt(counts.ok)}</div>
+      <div class="note">${pct(counts.ok)} del total</div></div>`;
 }
 
 // Matrix
@@ -1386,9 +1406,11 @@ function renderMatrixTab(){
   const days=visibleDays();
   let scope=scopeOps();
   if(state.onlyIssues)scope=scope.filter(o=>opStats(o).red>0);
+  if(state.kpiFilter)scope=scope.filter(o=>opBucket(o,days)===state.kpiFilter);
   scope=sortOps(scope);
   $('op-title').textContent=(state.viewMode==='units')?'Matriz unidad × día':'Matriz operador × día';
-  $('op-note').textContent=`${scope.length} ${(state.viewMode==='units')?'unidades':'operadores'} · ${days.length} días · ${state.plant==='ALL'?'todas las plantas':state.plant}`;
+  const filtNote=state.kpiFilter?` · filtro: ${KPI_LABELS[state.kpiFilter]}`:'';
+  $('op-note').textContent=`${scope.length} ${(state.viewMode==='units')?'unidades':'operadores'} · ${days.length} días · ${state.plant==='ALL'?'todas las plantas':state.plant}${filtNote}`;
   $('cnt-ops').textContent=scope.length;
   const arr=k=>`<span class="arr">${state.sortKey===k?(state.sortDir===1?'↑':'↓'):'↕'}</span>`;
   if(!scope.length){$('matrix-scroll').innerHTML=`<div class="empty">Sin ${(state.viewMode==='units')?'unidades':'operadores'} para mostrar</div>`;return;}
@@ -1642,6 +1664,17 @@ let _st;$('f-search').addEventListener('input',e=>{clearTimeout(_st);_st=setTime
 $('t-weekend').addEventListener('change',e=>{state.hideWeekends=e.target.checked;recompute();});
 $('t-na').addEventListener('change',e=>{state.naIdle=e.target.checked;recompute();});
 $('t-issues').addEventListener('change',e=>{state.onlyIssues=e.target.checked;recompute();});
+$('kpis').addEventListener('click',e=>{
+  const card=e.target.closest('.kpi');if(!card)return;
+  const k=card.dataset.kpi;if(!k)return;
+  state.kpiFilter=(k==='all')?null:(state.kpiFilter===k?null:k);
+  if(state.tab!=='operadores'){
+    state.tab='operadores';
+    [...$('tabs').querySelectorAll('button')].forEach(x=>x.classList.toggle('on',x.dataset.tab==='operadores'));
+    ['operadores','plantas','tendencia'].forEach(t=>$('tab-'+t).classList.toggle('hide',t!=='operadores'));
+  }
+  recompute();
+});
 
 $('tabs').addEventListener('click',e=>{
   const b=e.target.closest('button');if(!b||!b.dataset.tab)return;
@@ -1698,6 +1731,7 @@ $('btn-csv-exp').addEventListener('click',()=>{
   if(!DATA)return;
   const days=visibleDays();let scope=scopeOps();
   if(state.onlyIssues)scope=scope.filter(o=>opStats(o).red>0);
+  if(state.kpiFilter)scope=scope.filter(o=>opBucket(o,days)===state.kpiFilter);
   scope=sortOps(scope);
   const head=['Nomina','Operador','Planta','Status',...days.map(di=>DATA.dates[di]),'Total','DiasSinViaje','Cumplimiento%'];
   const lines=[head.join(',')];
